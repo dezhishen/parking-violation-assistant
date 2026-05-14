@@ -1,15 +1,17 @@
-# 违停管理系统（Go + Vue）
+# 停车违停助手（Go + Vue）
 
-这是一个仅依赖 Go + Vue 的违停管理系统。
+这是一个仅依赖 Go + Vue 的停车违停助手。
 
 - 后端使用 Go 提供 API 与文件服务。
 - 前端使用 Vue 3 + Element Plus。
+- 上传后由后端 OCR 自动识别车牌与时间，无需手动框选。
 - 前端构建产物会被嵌入 Go 二进制，最终可发布为单文件程序。
 
 ## 项目标识
 
 - Go Module: `github.com/dezhishen/parking-violation-assistant`
 - 推荐仓库地址: `github.com/dezhishen/parking-violation-assistant`
+- 前端包名: `parking-violation-assistant-frontend`
 
 ## 主要功能
 
@@ -26,6 +28,7 @@
 - SQLite（modernc.org/sqlite，纯 Go，无 CGO）
 - Vue 3 + Vite
 - Element Plus
+- ONNX OCR Runner（后端离线 OCR）
 
 ## 目录结构
 
@@ -147,63 +150,9 @@ GitHub Actions 工作流：
 - data/records.db：SQLite 数据库
 - data/uploads/：上传图片目录
 
-## 离线 OCR（跨平台）
+## OCR（后端 ONNX）
 
-系统支持前端内嵌 OCR，Linux / Windows / macOS 纯离线运行，不依赖任何在线服务。
-
-### 推荐方案（无需训练）：Tesseract 预训练模型
-
-将预训练语言包放到 `frontend/public/tessdata/`。
-
-默认（standard）：
-
-- `chi_sim.traineddata.gz`
-- `eng.traineddata.gz`
-
-可选更高精度（best）：
-
-- `chi_sim_best.traineddata.gz`
-- `eng_best.traineddata.gz`
-
-可选更快速度（fast）：
-
-- `chi_sim_fast.traineddata.gz`
-- `eng.traineddata.gz`
-
-目录结构示例：
-
-```text
-frontend/
-└─ public/
-	└─ tessdata/
-		├─ chi_sim.traineddata.gz
-		├─ eng.traineddata.gz
-		├─ chi_sim_best.traineddata.gz      # 可选
-		├─ eng_best.traineddata.gz          # 可选
-		└─ chi_sim_fast.traineddata.gz      # 可选
-```
-
-说明：
-
-- 这些都是官方预训练语言包，直接下载后使用，不需要训练。
-- 运行时会从本地路径 `/tessdata/...` 加载。
-- 可通过环境变量 `VITE_OCR_MODEL_PROFILE` 切换档位：`standard` / `fast` / `best`。
-- 前端构建前会自动执行 `prepare-tessdata`：
-	- 会确保 `standard/fast/best` 三档所需文件均存在于 `public/tessdata/`。
-	- 会复制稳定版 tesseract-core（非 SIMD）到 `public/tesseract-core/`，用于运行时固定加载。
-	- 若 `public/tessdata/` 缺失，会尝试从 `frontend/tessdata/` 复制。
-	- 本地仍缺失时会自动下载官方预训练语言包并生成 `.traineddata.gz`。
-	- 也可通过 `TESSDATA_DIR=/path/to/tessdata npm run build` 指定来源目录。
-- 后端 `go build` 会显式校验 `frontend/dist` 中的关键前端文件与 OCR 语言包，缺失时编译会直接失败，避免打出不完整二进制。
-
-额外保证：
-
-- 本地脚本（Linux/Windows）、VS Code `backend: build` 任务、CI 工作流都会在 `go build` 前执行 `scripts/verify_frontend_dist.mjs`。
-- 只有当前端关键文件（`index.html`、`assets/*.js`、`assets/*.css`、`tessdata` 语言包）完整时，后端构建才会继续。
-
-## Go + ONNX OCR（方案2）
-
-后端提供 `/api/ocr` 接口，可通过 Go 调用本地 ONNX OCR runner 执行识别。
+后端提供 `/api/ocr` 接口，前端上传图片后直接调用该接口执行离线识别。
 
 `runONNXOCR` 默认按以下推荐路径开箱即用（无需环境变量）：
 
@@ -212,6 +161,11 @@ frontend/
 - 识别模型：`<可执行文件目录>/ocr/models/license_rec.onnx`
 
 构建时会自动下载并准备以上资源（Linux/Windows 脚本、VS Code `backend: build`、CI 均已接入）。
+
+构建前置校验：
+
+- 本地脚本、VS Code `backend: build` 任务、CI 工作流都会在 `go build` 前执行 `scripts/verify_frontend_dist.mjs`。
+- 前端关键构建产物缺失时，后端构建会直接失败，避免输出不完整二进制。
 
 默认来源：
 
@@ -250,3 +204,7 @@ runner 建议输出 JSON，字段如下（最少支持 `raw_text` 或 `text`）�
 	"parking_time": "2026-05-14 10:22:00"
 }
 ```
+
+## 许可证
+
+本项目使用 MIT License，详见 `LICENSE`。

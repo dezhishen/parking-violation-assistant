@@ -4,7 +4,7 @@
     <el-header class="app-header">
       <div class="header-left">
         <el-icon size="22"><Van /></el-icon>
-        <span class="title">违停管理系统</span>
+        <span class="title">停车违停助手</span>
       </div>
       <div class="header-right">
         <el-button type="primary" :icon="Plus" @click="showCreateDialog = true">上传违停照片</el-button>
