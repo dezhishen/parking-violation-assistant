@@ -1,0 +1,38 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# 构建产物
+dist/
+dist/CountCar
+dist/CountCar.exe
+dist/CountCar-go
+/count-car
+
+# 数据库和上传文件（不提交到版本库）
+dist/data/
+data/records.db
+data/uploads/
+
+# 前端构建产物（构建时自动生成）
+frontend/dist/
+frontend/node_modules/
+
+# Python 遗留文件
+__pycache__/
+*.py[cod]
+*.spec
+build/
+.venv/
+.venv-tk/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

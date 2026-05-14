@@ -1,0 +1,83 @@
+name: Build Go+Vue App (Windows)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Verify frontend dist
+        run: node scripts/verify_frontend_dist.mjs
+
+      - name: Prepare ONNX OCR assets (Windows)
+        run: node scripts/prepare_onnx_ocr_assets.mjs --os windows --dist dist
+
+      - name: Build Go binary (Windows)
+        run: go build -ldflags="-s -w" -o dist/CountCar.exe .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CountCar-windows
+          path: |
+            dist/CountCar.exe
+            dist/ocr/**
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Verify frontend dist
+        run: node scripts/verify_frontend_dist.mjs
+
+      - name: Prepare ONNX OCR assets (Linux)
+        run: node scripts/prepare_onnx_ocr_assets.mjs --os linux --dist dist
+
+      - name: Build Go binary (Linux)
+        run: go build -ldflags="-s -w" -o dist/CountCar .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CountCar-linux
+          path: |
+            dist/CountCar
+            dist/ocr/**
