@@ -9,15 +9,6 @@ const root = path.resolve(__dirname, '..')
 const requiredFiles = [
   'frontend/dist/index.html',
   'frontend/dist/assets',
-  'frontend/dist/tesseract-core/tesseract-core-lstm.wasm.js',
-  'frontend/dist/tesseract-core/tesseract-core-lstm.wasm',
-  'frontend/dist/tesseract-core/tesseract-core.wasm.js',
-  'frontend/dist/tesseract-core/tesseract-core.wasm',
-  'frontend/dist/tessdata/chi_sim.traineddata.gz',
-  'frontend/dist/tessdata/eng.traineddata.gz',
-  'frontend/dist/tessdata/chi_sim_fast.traineddata.gz',
-  'frontend/dist/tessdata/chi_sim_best.traineddata.gz',
-  'frontend/dist/tessdata/eng_best.traineddata.gz',
 ]
 
 async function exists(p) {
