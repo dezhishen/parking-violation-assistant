@@ -25,12 +25,14 @@ type ParkingRecord struct {
 
 // QueryFilters 查询过滤条件
 type QueryFilters struct {
-	PlateKeyword string `json:"plate_keyword"`
-	Status       string `json:"status"`
-	StartDate    string `json:"start_date"`
-	EndDate      string `json:"end_date"`
-	Page         int    `json:"page"`
-	PageSize     int    `json:"page_size"`
+	PlateKeyword     string `json:"plate_keyword"`
+	Status           string `json:"status"`
+	StartDate        string `json:"start_date"`
+	EndDate          string `json:"end_date"`
+	Page             int    `json:"page"`
+	PageSize         int    `json:"page_size"`
+	OverThreeWarning bool   `json:"over_three_warning"`
+	WarningThreshold int    `json:"warning_threshold"`
 }
 
 // PlateStats 车牌统计（主界面表格用）

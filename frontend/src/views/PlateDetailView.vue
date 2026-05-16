@@ -37,9 +37,10 @@
           </div>
           <div class="actions">
             <template v-if="rec.status === '待处理'">
-              <el-button type="warning" size="small" @click="remind(rec)">提醒移车</el-button>
+              <el-button type="warning" size="small" @click="openRemindDialog(rec)">提醒移车</el-button>
             </template>
             <template v-else-if="rec.status === '待确认'">
+              <el-button type="primary" size="small" plain @click="openEditReminderDialog(rec)">修改提醒时间</el-button>
               <el-button type="danger" size="small" @click="confirmViolation(rec)">确认违停</el-button>
               <el-button type="success" size="small" @click="confirmMoved(rec)">确认已挪车</el-button>
             </template>
@@ -55,11 +56,34 @@
       @update:model-value="confirmDialogVisible = $event"
       @confirmed="handleConfirmViolationSubmit"
     />
+
+    <el-dialog
+      v-model="reminderDialogVisible"
+      :title="reminderDialogTitle"
+      width="420px"
+    >
+      <el-form label-width="90px">
+        <el-form-item label="提醒时间">
+          <el-date-picker
+            v-model="reminderForm.reminder_time"
+            type="datetime"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            placeholder="请选择提醒时间"
+            style="width:100%"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="reminderDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitReminderDialog">确定</el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -74,6 +98,20 @@ const records = ref([])
 const loading = ref(false)
 const confirmDialogVisible = ref(false)
 const currentRecord = ref(null)
+const reminderDialogVisible = ref(false)
+const reminderDialogMode = ref('remind')
+const reminderTargetRecord = ref(null)
+const reminderForm = reactive({
+  reminder_time: ''
+})
+
+const reminderDialogTitle = computed(() => (
+  reminderDialogMode.value === 'edit' ? '修改提醒时间' : '提醒移车'
+))
+
+function getNowDateTimeString() {
+  return new Date().toISOString().slice(0, 19).replace('T', ' ')
+}
 
 async function load() {
   loading.value = true
@@ -84,11 +122,39 @@ async function load() {
   }
 }
 
-async function remind(rec) {
-  const now = new Date().toISOString().slice(0, 19).replace('T', ' ')
-  await updateRecord(rec.id, { status: '待确认', reminder_time: now })
-  ElMessage.success('已提醒移车，状态变更为待确认')
-  load()
+function openRemindDialog(rec) {
+  reminderDialogMode.value = 'remind'
+  reminderTargetRecord.value = rec
+  reminderForm.reminder_time = rec.reminder_time || getNowDateTimeString()
+  reminderDialogVisible.value = true
+}
+
+function openEditReminderDialog(rec) {
+  reminderDialogMode.value = 'edit'
+  reminderTargetRecord.value = rec
+  reminderForm.reminder_time = rec.reminder_time || getNowDateTimeString()
+  reminderDialogVisible.value = true
+}
+
+async function submitReminderDialog() {
+  const rec = reminderTargetRecord.value
+  if (!rec) return
+  if (!reminderForm.reminder_time) {
+    ElMessage.warning('请选择提醒时间')
+    return
+  }
+
+  if (reminderDialogMode.value === 'edit') {
+    await updateRecord(rec.id, { status: rec.status, reminder_time: reminderForm.reminder_time })
+    ElMessage.success('提醒时间已修改')
+  } else {
+    await updateRecord(rec.id, { status: '待确认', reminder_time: reminderForm.reminder_time })
+    ElMessage.success('已提醒移车，状态变更为待确认')
+  }
+
+  reminderDialogVisible.value = false
+  reminderTargetRecord.value = null
+  await load()
 }
 
 async function confirmViolation(rec) {

@@ -431,13 +431,20 @@ func parseFilters(r *http.Request) models.QueryFilters {
 	q := r.URL.Query()
 	page, _ := strconv.Atoi(q.Get("page"))
 	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+	warningThreshold, _ := strconv.Atoi(q.Get("warning_threshold"))
+	if warningThreshold <= 0 {
+		warningThreshold = 3
+	}
+	overThreeWarning := q.Get("over_three_warning") == "1" || strings.EqualFold(q.Get("over_three_warning"), "true")
 	return models.QueryFilters{
-		PlateKeyword: q.Get("plate"),
-		Status:       q.Get("status"),
-		StartDate:    q.Get("start_date"),
-		EndDate:      q.Get("end_date"),
-		Page:         page,
-		PageSize:     pageSize,
+		PlateKeyword:     q.Get("plate"),
+		Status:           q.Get("status"),
+		StartDate:        q.Get("start_date"),
+		EndDate:          q.Get("end_date"),
+		OverThreeWarning: overThreeWarning,
+		WarningThreshold: warningThreshold,
+		Page:             page,
+		PageSize:         pageSize,
 	}
 }
 

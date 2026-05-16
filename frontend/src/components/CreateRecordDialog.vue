@@ -9,6 +9,8 @@
     <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
       <el-form-item label="照片" prop="image_path">
         <el-upload
+          ref="uploadRef"
+          v-model:file-list="uploadFileList"
           action="/api/upload"
           name="file"
           :multiple="false"
@@ -82,15 +84,17 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { createRecord, runOCR } from '@/api/index.js'
 
 const emit = defineEmits(['update:modelValue', 'created'])
-defineProps({ modelValue: Boolean })
+const props = defineProps({ modelValue: Boolean })
 
 const formRef = ref(null)
+const uploadRef = ref(null)
+const uploadFileList = ref([])
 const submitting = ref(false)
 const ocrLoading = ref(false)
 const ocrLines = ref([])
@@ -289,6 +293,8 @@ async function handleSubmit() {
 }
 
 function resetForm() {
+  uploadFileList.value = []
+  uploadRef.value?.clearFiles()
   form.plate_number = ''
   form.image_path = ''
   form.parking_time = ''
@@ -299,6 +305,15 @@ function resetForm() {
   previewVisible.value = false
   formRef.value?.resetFields()
 }
+
+watch(
+  () => props.modelValue,
+  (visible) => {
+    if (visible) {
+      resetForm()
+    }
+  }
+)
 </script>
 
 <style scoped>

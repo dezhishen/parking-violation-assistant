@@ -38,6 +38,20 @@
               <el-option v-for="s in statuses" :key="s" :label="s" :value="s" />
             </el-select>
           </el-form-item>
+          <el-form-item label="预警筛选">
+            <div class="warning-filter">
+              <el-checkbox v-model="query.over_three_warning">仅看大于</el-checkbox>
+              <el-input-number
+                v-model="query.warning_threshold"
+                :min="1"
+                :max="999"
+                :step="1"
+                controls-position="right"
+                style="width:100px"
+              />
+              <span>次预警车辆</span>
+            </div>
+          </el-form-item>
           <el-form-item label="时间范围">
             <el-date-picker
               v-model="dateRange"
@@ -127,6 +141,8 @@ const dateRange = ref([firstDay, lastDay])
 const query = reactive({
   plate: '',
   status: '',
+  over_three_warning: false,
+  warning_threshold: 3,
   page: 1,
   page_size: 20
 })
@@ -134,7 +150,12 @@ const query = reactive({
 const statuses = ['待处理', '待确认', '违停', '已挪车']
 
 const exportParams = computed(() => {
-  const p = { plate: query.plate, status: query.status }
+  const p = {
+    plate: query.plate,
+    status: query.status,
+    over_three_warning: query.over_three_warning ? 1 : 0,
+    warning_threshold: Number(query.warning_threshold) > 0 ? Number(query.warning_threshold) : 3
+  }
   if (dateRange.value?.length === 2) {
     p.start_date = dateRange.value[0]
     p.end_date = dateRange.value[1]
@@ -166,6 +187,8 @@ function handleSearch() {
 function handleReset() {
   query.plate = ''
   query.status = ''
+  query.over_three_warning = false
+  query.warning_threshold = 3
   dateRange.value = [firstDay, lastDay]
   query.page = 1
   loadData()
@@ -220,6 +243,7 @@ onMounted(() => {
 .stat-label { font-size: 16px; margin-top: 4px; }
 .stat-hint { font-size: 12px; color: #999; }
 .query-card { margin-bottom: 16px; }
+.warning-filter { display: inline-flex; align-items: center; gap: 8px; }
 .query-form { flex-wrap: wrap; }
 .export-btns { margin-left: auto; }
 .table-card {}

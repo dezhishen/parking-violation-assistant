@@ -129,6 +129,14 @@ func GetPlateStats(filters models.QueryFilters) (*models.PlateStatsResult, error
 		// 未指定状态时，默认按“违停”统计，保持主界面默认语义。
 		where = addWhere(where, "status = '违停'")
 	}
+	having := ""
+	if filters.OverThreeWarning {
+		threshold := filters.WarningThreshold
+		if threshold <= 0 {
+			threshold = 3
+		}
+		having = fmt.Sprintf(" HAVING COUNT(*) > %d", threshold)
+	}
 
 	if filters.PageSize <= 0 {
 		filters.PageSize = 20
@@ -138,7 +146,7 @@ func GetPlateStats(filters models.QueryFilters) (*models.PlateStatsResult, error
 	}
 	offset := (filters.Page - 1) * filters.PageSize
 
-	countQuery := "SELECT COUNT(DISTINCT plate_number) FROM parking_records" + where
+	countQuery := "SELECT COUNT(*) FROM (SELECT plate_number FROM parking_records" + where + " GROUP BY plate_number" + having + ") t"
 	var total int
 	if err := db.DB.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, err
@@ -149,6 +157,7 @@ func GetPlateStats(filters models.QueryFilters) (*models.PlateStatsResult, error
 		SELECT plate_number, COUNT(*) as cnt, MAX(parking_time) as last_violation
 		FROM parking_records`+where+`
 		GROUP BY plate_number
+		`+having+`
 		ORDER BY cnt DESC, last_violation DESC
 		LIMIT ? OFFSET ?`, dataArgs...)
 	if err != nil {
@@ -225,10 +234,19 @@ func ListPlateStatsForExport(filters models.QueryFilters) ([]models.PlateStats, 
 	if filters.Status == "" {
 		where = addWhere(where, "status = '违停'")
 	}
+	having := ""
+	if filters.OverThreeWarning {
+		threshold := filters.WarningThreshold
+		if threshold <= 0 {
+			threshold = 3
+		}
+		having = fmt.Sprintf(" HAVING COUNT(*) > %d", threshold)
+	}
 	rows, err := db.DB.Query(`
 		SELECT plate_number, COUNT(*) as cnt, MAX(parking_time) as last_violation
 		FROM parking_records`+where+`
 		GROUP BY plate_number
+		`+having+`
 		ORDER BY cnt DESC, last_violation DESC`, args...)
 	if err != nil {
 		return nil, err
