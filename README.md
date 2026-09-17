@@ -15,20 +15,22 @@
 
 ## 主要功能
 
-1. 上传违停照片并创建记录。
-2. 按车牌、时间范围查询违停数据。
+1. 上传违停照片并创建记录（取消上传会自动清理未使用的图片）。
+2. 按车牌、状态、时间范围查询违停数据；筛选条件同步到地址栏，从车牌详情返回后仍然保留。
 3. 主界面按车牌聚合展示：最后违停时间、违停次数。
-4. 高频违停车牌（3 次及以上）高亮。
-5. 记录状态流转：待处理 -> 已提醒 -> 待确认移车 -> 违停 / 已移车。
+4. 高频违停车牌高亮，高亮阈值与「仅看 N 次及以上预警车辆」筛选保持一致。
+5. 记录状态流转：待处理 -> 待确认 -> 违停 / 已挪车；进入终态前有二次确认。
 6. 导出 Excel：详细记录、统计记录两类模板。
 
 ## 技术栈
 
 - Go（标准库 net/http）
-- SQLite（modernc.org/sqlite，纯 Go，无 CGO）
+- SQLite（modernc.org/sqlite，纯 Go，无 CGO，启用 WAL）
 - Vue 3 + Vite
-- Element Plus
+- Element Plus（组件按需引入）
 - ONNX OCR Runner（后端离线 OCR）
+
+静态资源在服务端按需 gzip 压缩，前端资源带长缓存头。
 
 ## 目录结构
 
@@ -73,7 +75,7 @@ cd ..
 go run .
 ```
 
-启动后程序会自动尝试打开浏览器。
+启动后程序会自动尝试打开浏览器，可用 `-no-browser` 关闭该行为。
 
 可选：指定固定端口启动。
 
@@ -91,6 +93,50 @@ COUNTCAR_PORT=8080 go run .
 
 - 传入 `-port` 时，后端监听固定端口。
 - 未传入 `-port` 且未设置 `COUNTCAR_PORT` 时，后端会随机选择一个可用端口（当前默认模式）。
+
+## Makefile 命令
+
+推荐用 Makefile 统一入口，执行 `make help` 查看全部命令。
+
+开发模式（一条命令同时拉起后端与前端）：
+
+```bash
+make dev
+```
+
+- 后端固定监听 `8080`，前端 Vite 监听 `5173`，Vite 会把 `/api`、`/uploads` 代理到后端。
+- 后端与前端**日志统一输出在当前控制台**，不写日志文件。
+- PID 记录在 `.dev/backend.pid`、`.dev/frontend.pid`；再次执行 `make dev` 会先停掉上一次启动的进程。
+- 后端二进制与数据目录都在 `.dev/` 下（`.dev/backend`、`.dev/data`），不会污染 `data/`。
+- `Ctrl-C` 即可停止，也可以另开终端执行 `make dev-stop`。
+
+端口可覆盖：
+
+```bash
+make dev BACKEND_PORT=9090 FRONTEND_PORT=5174
+```
+
+其他常用命令：
+
+```bash
+make dev-status     # 查看开发进程状态
+make build          # 完整生产构建（等同 scripts/build_go_linux.sh）
+make build-windows  # Windows 完整生产构建
+make build-frontend # 只构建前端产物
+make build-backend  # 只构建后端二进制（使用现有 frontend/dist）
+make run            # 本地运行后端（数据落在 .dev/data）
+make vet test fmt   # 静态检查 / 单测 / 格式化
+make clean          # 清理 dist、前端产物与 .dev 二进制
+make clean-dev      # 停止开发进程并删除 .dev（含本地测试数据）
+```
+
+## 单元测试
+
+```bash
+make test        # 等同 go test ./...
+```
+
+覆盖 OCR 结果解析（车牌/时间提取）、图片上传校验、上传路径解析、查询条件构造与状态流转规则。
 
 ## 生产构建（单文件）
 

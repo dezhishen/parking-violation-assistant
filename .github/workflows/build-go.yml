@@ -1,7 +1,7 @@
 name: Build Go+Vue App (Windows)
 
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
@@ -10,8 +10,65 @@ on:
   workflow_dispatch:
 
 jobs:
+  check:
+    name: Vet & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # go:embed 需要 frontend/dist 存在，这里只需要占位目录
+      - name: Stub embed dir
+        run: |
+          mkdir -p frontend/dist
+          [ -f frontend/dist/index.html ] || echo '<!doctype html>' > frontend/dist/index.html
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  frontend:
+    name: Build frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify frontend dist
+        run: node scripts/verify_frontend_dist.mjs
+
+      # 前端产物与平台无关，构建一次供两个平台复用
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
   build-windows:
     runs-on: windows-latest
+    needs: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -24,12 +81,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache: true
 
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm install
-          npm run build
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
 
       - name: Verify frontend dist
         run: node scripts/verify_frontend_dist.mjs
@@ -59,6 +117,7 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    needs: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -71,12 +130,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache: true
 
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm install
-          npm run build
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
 
       - name: Verify frontend dist
         run: node scripts/verify_frontend_dist.mjs
@@ -102,7 +162,10 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
+      - check
       - build-windows
       - build-linux
     if: startsWith(github.ref, 'refs/tags/')
