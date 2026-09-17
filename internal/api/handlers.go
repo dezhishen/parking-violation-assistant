@@ -3,7 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -30,6 +33,30 @@ import (
 
 var uploadDir string
 
+const (
+	// maxUploadBytes 单个上传文件（含 multipart 开销）的最大字节数。
+	maxUploadBytes = 20 << 20
+	// maxOCRJSONBytes JSON 形式的 OCR 请求体上限。
+	maxOCRJSONBytes = 1 << 20
+)
+
+// allowedImageExt 允许上传的图片扩展名。
+var allowedImageExt = map[string]bool{
+	".jpg":  true,
+	".jpeg": true,
+	".png":  true,
+	".bmp":  true,
+	".gif":  true,
+}
+
+// allowedImageMIME 允许上传的图片内容类型（依据文件头字节判断）。
+var allowedImageMIME = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/bmp":  true,
+	"image/gif":  true,
+}
+
 // SetUploadDir 设置上传目录
 func SetUploadDir(dir string) {
 	uploadDir = dir
@@ -43,6 +70,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/plates/", handlePlateDetail)
 	mux.HandleFunc("/api/dashboard", handleDashboard)
 	mux.HandleFunc("/api/upload", handleUpload)
+	mux.HandleFunc("/api/uploads/discard", handleDiscardUpload)
 	mux.HandleFunc("/api/ocr", handleOCR)
 	mux.HandleFunc("/api/export/detail", handleExportDetail)
 	mux.HandleFunc("/api/export/summary", handleExportSummary)
@@ -109,16 +137,18 @@ func handleRecordByID(w http.ResponseWriter, r *http.Request) {
 		}
 		record, err := service.UpdateStatus(id, req)
 		if err != nil {
-			jsonError(w, err.Error(), http.StatusInternalServerError)
+			serviceError(w, err)
 			return
 		}
 		jsonOK(w, record)
 
 	case http.MethodDelete:
-		if err := service.DeleteRecord(id); err != nil {
-			jsonError(w, err.Error(), http.StatusInternalServerError)
+		record, err := service.DeleteRecord(id)
+		if err != nil {
+			serviceError(w, err)
 			return
 		}
+		cleanupRecordFiles(record)
 		jsonOK(w, map[string]string{"message": "删除成功"})
 
 	default:
@@ -141,7 +171,7 @@ func handlePlates(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, result)
 }
 
-// handlePlateDetail GET /api/plates/:plate — 某车牌的所有记录
+// handlePlateDetail GET /api/plates/:plate — 某车牌的记录（分页）
 func handlePlateDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -153,12 +183,13 @@ func handlePlateDetail(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "车牌号不能为空", http.StatusBadRequest)
 		return
 	}
-	records, err := service.GetPlateRecords(plate)
+	filters := parseFilters(r)
+	result, err := service.GetPlateRecords(plate, filters.Page, filters.PageSize)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, records)
+	jsonOK(w, result)
 }
 
 // handleDashboard GET /api/dashboard — 首页统计
@@ -182,8 +213,8 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20) // 20MB
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 		jsonError(w, "文件过大", http.StatusBadRequest)
 		return
 	}
@@ -195,28 +226,44 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// 校验文件类型
+	// 校验文件类型：先看扩展名，再校验文件头，避免改后缀上传任意内容。
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".bmp": true, ".gif": true}
-	if !allowed[ext] {
+	if !allowedImageExt[ext] {
 		jsonError(w, "不支持的文件类型，仅支持图片", http.StatusBadRequest)
 		return
 	}
+	if err := verifyImageContent(file); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	// 生成唯一文件名
-	timestamp := time.Now().Format("20060102_150405")
-	newName := fmt.Sprintf("%s_%d%s", timestamp, time.Now().UnixNano()%10000, ext)
+	newName, err := newUploadName(ext)
+	if err != nil {
+		jsonError(w, "生成文件名失败", http.StatusInternalServerError)
+		return
+	}
 	savePath := filepath.Join(uploadDir, newName)
 
-	dst, err := os.Create(savePath)
+	// 先写临时文件，成功后再重命名，避免失败时留下半截文件。
+	tmp, err := os.CreateTemp(uploadDir, "upload_*.tmp")
 	if err != nil {
 		jsonError(w, "保存文件失败", http.StatusInternalServerError)
 		return
 	}
-	defer dst.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
 
-	if _, err := io.Copy(dst, file); err != nil {
+	if _, err := io.Copy(tmp, file); err != nil {
+		tmp.Close()
 		jsonError(w, "写入文件失败", http.StatusInternalServerError)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		jsonError(w, "写入文件失败", http.StatusInternalServerError)
+		return
+	}
+	if err := os.Rename(tmpName, savePath); err != nil {
+		jsonError(w, "保存文件失败", http.StatusInternalServerError)
 		return
 	}
 
@@ -228,15 +275,94 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// verifyImageContent 读取文件头判断真实内容类型，并把读取位置复位。
+func verifyImageContent(file io.ReadSeeker) error {
+	head := make([]byte, 512)
+	n, err := io.ReadFull(file, head)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return fmt.Errorf("读取文件失败")
+	}
+	if !allowedImageMIME[http.DetectContentType(head[:n])] {
+		return fmt.Errorf("文件内容不是受支持的图片格式")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("读取文件失败")
+	}
+	return nil
+}
+
+// newUploadName 生成唯一的上传文件名（时间戳 + 随机串）。
+func newUploadName(ext string) (string, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s_%s%s", time.Now().Format("20060102_150405"), hex.EncodeToString(buf[:]), ext), nil
+}
+
+// handleDiscardUpload POST /api/uploads/discard — 丢弃未被任何记录引用的上传图片
+// 用于「上传后取消创建记录」的场景，避免在磁盘上留下孤儿文件。
+func handleDiscardUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxOCRJSONBytes)
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "请求格式错误", http.StatusBadRequest)
+		return
+	}
+
+	stored := strings.TrimSpace(req.URL)
+	if stored == "" {
+		jsonError(w, "图片地址不能为空", http.StatusBadRequest)
+		return
+	}
+
+	filePath, err := resolveImageFilePath(stored)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !isInsideDir(uploadDir, filePath) {
+		jsonError(w, "只能丢弃上传目录内的文件", http.StatusBadRequest)
+		return
+	}
+
+	referenced, err := service.IsImagePathReferenced(stored, 0)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if referenced {
+		jsonOK(w, map[string]string{"message": "图片已被记录引用，跳过删除"})
+		return
+	}
+
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		jsonError(w, "删除图片失败", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("丢弃未使用的上传文件: %s", filePath)
+	jsonOK(w, map[string]string{"message": "已丢弃"})
+}
+
 // handleServeFile GET /uploads/:filename — 提供上传的图片访问
 func handleServeFile(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/uploads/")
-	// 安全校验：不允许路径穿越
-	name = filepath.Base(name)
-	if name == "." || name == "/" {
+	name := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/uploads/"))
+	// 安全校验：不允许路径穿越，只接受纯文件名
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) || name != filepath.Base(name) {
 		http.NotFound(w, r)
 		return
 	}
+	// 上传文件内容已做类型校验，额外禁止浏览器嗅探内容类型。
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeFile(w, r, filepath.Join(uploadDir, name))
 }
 
@@ -250,7 +376,8 @@ func handleOCR(w http.ResponseWriter, r *http.Request) {
 	imagePath := ""
 	var fileToRemove string
 	if strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
-		if err := r.ParseMultipartForm(20 << 20); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 			jsonError(w, "文件过大", http.StatusBadRequest)
 			return
 		}
@@ -282,6 +409,7 @@ func handleOCR(w http.ResponseWriter, r *http.Request) {
 		tempFile.Close()
 		imagePath = tempFile.Name()
 	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, maxOCRJSONBytes)
 		var req struct {
 			ImagePath string `json:"image_path"`
 		}
@@ -330,6 +458,8 @@ func handleExportDetail(w http.ResponseWriter, r *http.Request) {
 	f := excelize.NewFile()
 	sheet := "详细记录"
 	f.SetSheetName("Sheet1", sheet)
+	// excelize 会为工作簿创建临时文件，必须显式关闭，否则反复导出会泄漏磁盘与句柄。
+	defer closeExportFile(f)
 
 	headers := []string{"ID", "车牌号", "第一张照片", "停车时间", "状态", "提醒时间", "第二次照片", "第二次检查时间", "备注", "创建时间"}
 	for i, h := range headers {
@@ -397,6 +527,8 @@ func handleExportSummary(w http.ResponseWriter, r *http.Request) {
 	f := excelize.NewFile()
 	sheet := "统计记录"
 	f.SetSheetName("Sheet1", sheet)
+	// excelize 会为工作簿创建临时文件，必须显式关闭，否则反复导出会泄漏磁盘与句柄。
+	defer closeExportFile(f)
 
 	headers := []string{"车牌号", "违停次数", "最后违停时间", "是否高频(3次以上)"}
 	for i, h := range headers {
@@ -433,7 +565,7 @@ func parseFilters(r *http.Request) models.QueryFilters {
 	pageSize, _ := strconv.Atoi(q.Get("page_size"))
 	warningThreshold, _ := strconv.Atoi(q.Get("warning_threshold"))
 	if warningThreshold <= 0 {
-		warningThreshold = 3
+		warningThreshold = models.DefaultWarningThreshold
 	}
 	overThreeWarning := q.Get("over_three_warning") == "1" || strings.EqualFold(q.Get("over_three_warning"), "true")
 	return models.QueryFilters{
@@ -457,6 +589,76 @@ func jsonError(w http.ResponseWriter, msg string, status int) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{"code": -1, "message": msg})
+}
+
+// closeExportFile 关闭导出工作簿并释放其临时文件。
+func closeExportFile(f *excelize.File) {
+	if err := f.Close(); err != nil {
+		log.Printf("清理导出临时文件失败: %v", err)
+	}
+}
+
+// serviceError 把 service 层的领域错误映射为合适的 HTTP 状态码。
+func serviceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrRecordNotFound):
+		jsonError(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, service.ErrInvalidTransition):
+		jsonError(w, err.Error(), http.StatusBadRequest)
+	default:
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// cleanupRecordFiles 删除记录后，清理不再被其他记录引用的图片文件。
+func cleanupRecordFiles(record *models.ParkingRecord) {
+	if record == nil {
+		return
+	}
+
+	paths := []string{record.ImagePath}
+	if record.SecondImagePath != nil {
+		paths = append(paths, *record.SecondImagePath)
+	}
+
+	for _, stored := range paths {
+		stored = strings.TrimSpace(stored)
+		if stored == "" {
+			continue
+		}
+
+		filePath, err := resolveImageFilePath(stored)
+		if err != nil {
+			log.Printf("清理图片跳过(路径无法解析): %s (%v)", stored, err)
+			continue
+		}
+		// 只删除上传目录内的文件，避免误删历史数据中的外部路径。
+		if !isInsideDir(uploadDir, filePath) {
+			continue
+		}
+
+		referenced, err := service.IsImagePathReferenced(stored, record.ID)
+		if err != nil {
+			log.Printf("清理图片跳过(引用检查失败): %s (%v)", stored, err)
+			continue
+		}
+		if referenced {
+			continue
+		}
+
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("清理图片失败: %s (%v)", filePath, err)
+		}
+	}
+}
+
+// isInsideDir 判断 path 是否位于 dir 内（含子目录）。
+func isInsideDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func nilStr(s *string) string {
@@ -546,6 +748,11 @@ func addImageToCell(f *excelize.File, sheet, cell, storedPath string) error {
 }
 
 func resolveImageFilePath(storedPath string) (string, error) {
+	storedPath = strings.TrimSpace(storedPath)
+	if storedPath == "" {
+		return "", fmt.Errorf("图片路径为空")
+	}
+
 	if strings.HasPrefix(storedPath, "http://") || strings.HasPrefix(storedPath, "https://") {
 		u, err := url.Parse(storedPath)
 		if err != nil {
@@ -554,25 +761,36 @@ func resolveImageFilePath(storedPath string) (string, error) {
 		storedPath = u.Path
 	}
 
-	storedPath = filepath.Clean(strings.TrimSpace(storedPath))
-	if storedPath == "" || storedPath == "." {
-		return "", fmt.Errorf("图片路径为空")
+	// 先判断前缀再取文件名，避免 "/uploads/../x" 被 Clean 成上传目录之外的路径。
+	if strings.HasPrefix(storedPath, "/uploads/") || strings.HasPrefix(storedPath, "uploads/") {
+		name := filepath.Base(storedPath)
+		if !isValidUploadName(name) {
+			return "", fmt.Errorf("图片路径非法: %s", storedPath)
+		}
+		return filepath.Join(uploadDir, name), nil
 	}
 
-	if strings.HasPrefix(storedPath, "/uploads/") {
-		name := filepath.Base(strings.TrimPrefix(storedPath, "/uploads/"))
-		return filepath.Join(uploadDir, name), nil
-	}
-	if strings.HasPrefix(storedPath, "uploads/") {
-		name := filepath.Base(strings.TrimPrefix(storedPath, "uploads/"))
-		return filepath.Join(uploadDir, name), nil
-	}
 	if filepath.IsAbs(storedPath) {
-		return storedPath, nil
+		cleaned := filepath.Clean(storedPath)
+		// 只允许读取上传目录内的绝对路径，防止通过 image_path 读取任意文件。
+		if !isInsideDir(uploadDir, cleaned) {
+			return "", fmt.Errorf("图片路径不在上传目录内: %s", storedPath)
+		}
+		return cleaned, nil
 	}
 
 	// 兜底：历史数据可能只保存了文件名。
-	return filepath.Join(uploadDir, filepath.Base(storedPath)), nil
+	name := filepath.Base(filepath.Clean(storedPath))
+	if !isValidUploadName(name) {
+		return "", fmt.Errorf("图片路径非法: %s", storedPath)
+	}
+	return filepath.Join(uploadDir, name), nil
+}
+
+// isValidUploadName 判断是否为合法的上传文件名（不含路径成分）
+func isValidUploadName(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		!strings.ContainsAny(name, `/\`) && name == filepath.Base(name)
 }
 
 func runONNXOCR(filePath string) (*models.OCRResult, error) {
@@ -793,23 +1011,31 @@ func resolveONNXRuntimeConfig() (runner string, detModel string, recModel string
 	return runner, detModel, recModel, nil
 }
 
-func extractPlateNumber(text string) string {
-	normalized := strings.ToUpper(text)
-	normalized = strings.ReplaceAll(normalized, " ", "")
-	normalized = strings.ReplaceAll(normalized, "\n", "")
-	normalized = strings.ReplaceAll(normalized, "\r", "")
+// 预编译正则：这些正则在每次 OCR 结果解析时都会用到，避免重复编译。
+// 号牌后必须是非字母数字边界，否则会把下一行的日期数字粘进号牌（如「京A12345」+「2026-05-14」）。
+var (
+	plateNumberRe = regexp.MustCompile(`([京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{5,6})(?:[^A-Z0-9]|$)`)
+	parkingTimeRe = regexp.MustCompile(`(?m)(20\d{2})[-/年\.](\d{1,2})[-/月\.](\d{1,2})(?:日)?\s+([01]?\d|2[0-3])[:时](\d{1,2})(?:[:分](\d{1,2}))?`)
+)
 
-	plateRe := regexp.MustCompile(`([京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{5,6})`)
-	match := plateRe.FindStringSubmatch(normalized)
-	if len(match) >= 2 {
-		return match[1]
+func extractPlateNumber(text string) string {
+	cleaned := strings.ReplaceAll(text, "\r", "")
+	for _, line := range strings.Split(cleaned, "\n") {
+		upper := strings.ToUpper(line)
+		// 先按原样匹配：保留空格作为号牌与后续数字的分隔
+		if m := plateNumberRe.FindStringSubmatch(upper); len(m) >= 2 {
+			return m[1]
+		}
+		// 再容忍 OCR 在号牌内部插入空格的情况（如「粤 A 12345」）
+		if m := plateNumberRe.FindStringSubmatch(strings.ReplaceAll(upper, " ", "")); len(m) >= 2 {
+			return m[1]
+		}
 	}
 	return ""
 }
 
 func extractParkingTime(text string) string {
-	re := regexp.MustCompile(`(?m)(20\d{2})[-/年\.](\d{1,2})[-/月\.](\d{1,2})(?:日)?\s+([01]?\d|2[0-3])[:时](\d{1,2})(?:[:分](\d{1,2}))?`)
-	match := re.FindStringSubmatch(text)
+	match := parkingTimeRe.FindStringSubmatch(text)
 	if len(match) == 0 {
 		return ""
 	}

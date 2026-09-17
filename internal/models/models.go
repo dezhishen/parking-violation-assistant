@@ -8,6 +8,12 @@ const (
 	StatusMoved       = "已挪车" // 确认已挪车
 )
 
+// StatusAll 查询参数专用：表示不按状态筛选
+const StatusAll = "all"
+
+// DefaultWarningThreshold 高频违停车牌的默认预警阈值
+const DefaultWarningThreshold = 3
+
 // ParkingRecord 停车违规记录
 type ParkingRecord struct {
 	ID              int64   `json:"id"`
@@ -63,6 +69,14 @@ type PlateStatsResult struct {
 	Total    int          `json:"total"`
 	Page     int          `json:"page"`
 	PageSize int          `json:"page_size"`
+}
+
+// PlateRecordsResult 某车牌记录的查询结果（分页）
+type PlateRecordsResult struct {
+	Records  []ParkingRecord `json:"records"`
+	Total    int             `json:"total"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"page_size"`
 }
 
 // OCRResult OCR识别结果

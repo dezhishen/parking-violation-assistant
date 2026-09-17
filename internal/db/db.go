@@ -19,12 +19,16 @@ func Init(dataDir string) error {
 	}
 
 	dbPath := filepath.Join(dataDir, "records.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// WAL + busy_timeout：读写可并行，写冲突时自动等待而不是立刻报 database is locked。
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("打开数据库失败: %w", err)
 	}
 
-	db.SetMaxOpenConns(1) // SQLite 单连接
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(0)
 
 	if err := migrate(db); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)

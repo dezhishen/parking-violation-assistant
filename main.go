@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dezhishen/parking-violation-assistant/internal/api"
@@ -21,6 +22,9 @@ import (
 
 //go:embed frontend/dist
 var frontendFS embed.FS
+
+// noBrowser 启动时不自动打开浏览器（开发模式由 Vite 提供页面）
+var noBrowser = flag.Bool("no-browser", false, "启动时不自动打开浏览器")
 
 func main() {
 	port := resolvePort()
@@ -72,22 +76,51 @@ func main() {
 	}
 	fileServer := http.FileServer(http.FS(distFS))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// 对于非 /api/ 和 /uploads/ 路径，都返回 index.html（SPA 路由）
-		if _, err := distFS.Open(r.URL.Path[1:]); err != nil {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if name == "" {
+			name = "index.html"
+		}
+		// 文本类静态资源走 gzip + 长缓存
+		if served := serveCompressed(w, r, distFS, name); served {
+			return
+		}
+
+		f, err := distFS.Open(name)
+		if err != nil {
+			// 静态资源（带扩展名）缺失时返回 404，避免把 index.html 当成 JS/CSS 返回。
+			if filepath.Ext(name) != "" {
+				http.NotFound(w, r)
+				return
+			}
+			// 其余路径视为前端路由，回退到 index.html（SPA 路由）。
 			r.URL.Path = "/"
+		} else {
+			info, statErr := f.Stat()
+			f.Close()
+			// 不暴露内嵌产物的目录列表
+			if statErr == nil && info.IsDir() {
+				http.NotFound(w, r)
+				return
+			}
 		}
 		fileServer.ServeHTTP(w, r)
 	})
 
 	log.Printf("启动服务: http://%s", addr)
 
-	// 延迟打开浏览器
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		openBrowser(fmt.Sprintf("http://%s", addr))
-	}()
+	if !*noBrowser {
+		// 延迟打开浏览器
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			openBrowser(fmt.Sprintf("http://%s", addr))
+		}()
+	}
 
-	server := &http.Server{Handler: mux}
+	// 不设置 WriteTimeout：导出 Excel 等长任务需要较长时间。
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	log.Fatal(server.Serve(listener))
 }
 
