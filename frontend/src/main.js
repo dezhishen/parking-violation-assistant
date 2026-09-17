@@ -1,22 +1,17 @@
 import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
+import { vLoading } from 'element-plus'
 import 'element-plus/dist/index.css'
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
 
 import App from './App.vue'
 import router from './router/index.js'
 
 const app = createApp(App)
 
-// 注册所有 Element Plus 图标
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-  app.component(key, component)
-}
+// Element Plus 组件由 unplugin-vue-components 按需引入；
+// 图标在各组件内单独 import，避免把整包图标打进产物。
+// v-loading 指令需要显式注册。
+app.directive('loading', vLoading)
 
-app.use(createPinia())
 app.use(router)
-app.use(ElementPlus, { locale: zhCn })
 
 app.mount('#app')

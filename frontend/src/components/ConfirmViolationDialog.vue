@@ -6,6 +6,14 @@
     width="560px"
     @close="resetForm"
   >
+    <el-alert
+      type="warning"
+      :closable="false"
+      show-icon
+      title="确认后状态将变为「违停」且无法撤销，请核对照片后再提交。"
+      class="confirm-tip"
+    />
+
     <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
       <el-form-item label="现场照片" prop="violation_image">
         <el-upload
@@ -29,7 +37,7 @@
       </el-form-item>
 
       <el-form-item label="备注">
-        <el-input v-model="form.notes" type="textarea" rows="2" placeholder="可选" />
+        <el-input v-model="form.notes" type="textarea" rows="2" placeholder="可选，会追加到原有备注之后" />
       </el-form-item>
     </el-form>
 
@@ -142,6 +150,7 @@ async function handleSubmit() {
 
 <style scoped>
 .upload-tip { color: #999; font-size: 12px; margin-top: 4px; }
+.confirm-tip { margin-bottom: 16px; }
 .preview-image {
   display: block;
   width: 100%;

@@ -15,7 +15,13 @@
       <el-card class="query-card">
         <el-form :model="query" inline>
           <el-form-item label="车牌号">
-            <el-input v-model="query.plate" placeholder="模糊搜索" clearable style="width:140px" />
+            <el-input
+              v-model="query.plate"
+              placeholder="模糊搜索"
+              clearable
+              style="width:140px"
+              @keyup.enter="handleSearch"
+            />
           </el-form-item>
           <el-form-item label="状态">
             <el-select v-model="query.status" clearable placeholder="全部" style="width:130px">
@@ -61,6 +67,11 @@
               <el-button type="danger" size="small" link @click="handleDelete(row)">删除</el-button>
             </template>
           </el-table-column>
+          <template #empty>
+            <el-empty description="暂无违停记录">
+              <el-button type="primary" :icon="Plus" @click="showCreateDialog = true">上传违停照片</el-button>
+            </el-empty>
+          </template>
         </el-table>
         <div class="pagination">
           <el-pagination
@@ -69,7 +80,7 @@
             :total="total"
             :page-sizes="[10, 20, 50]"
             layout="total, sizes, prev, pager, next"
-            @change="loadData"
+            @change="handlePageChange"
           />
         </div>
       </el-card>
@@ -80,8 +91,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, reactive, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ArrowLeft, Plus, Search, List } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getRecords, deleteRecord } from '@/api/index.js'
@@ -89,7 +100,6 @@ import StatusTag from '@/components/StatusTag.vue'
 import CreateRecordDialog from '@/components/CreateRecordDialog.vue'
 
 const route = useRoute()
-const router = useRouter()
 
 const statuses = ['待处理', '待确认', '违停', '已挪车']
 const loading = ref(false)
@@ -118,6 +128,11 @@ async function loadData() {
       params.end_date = dateRange.value[1]
     }
     const res = await getRecords(params)
+    // 删除后当前页可能为空，自动回退到上一页
+    if ((res.records || []).length === 0 && res.total > 0 && query.page > 1) {
+      query.page -= 1
+      return await loadData()
+    }
     tableData.value = res.records || []
     total.value = res.total || 0
   } finally {
@@ -127,6 +142,10 @@ async function loadData() {
 
 function handleSearch() {
   query.page = 1
+  loadData()
+}
+
+function handlePageChange() {
   loadData()
 }
 
@@ -145,6 +164,18 @@ async function handleDelete(row) {
   loadData()
 }
 
+// 首页统计卡片跳转过来时，状态筛选需要跟随路由变化
+watch(
+  () => route.query.status,
+  (status) => {
+    const next = status || ''
+    if (next === query.status) return
+    query.status = next
+    query.page = 1
+    loadData()
+  }
+)
+
 onMounted(loadData)
 </script>
 
@@ -160,4 +191,18 @@ onMounted(loadData)
 .app-main { padding: 20px; }
 .query-card { margin-bottom: 16px; }
 .pagination { margin-top: 16px; display: flex; justify-content: flex-end; }
+
+@media (max-width: 768px) {
+  .app-header {
+    height: auto; min-height: 60px; padding: 8px 12px;
+    flex-wrap: wrap; gap: 8px;
+  }
+  .title { font-size: 16px; }
+  .app-main { padding: 12px; }
+  .query-card :deep(.el-form-item) { margin-right: 0; width: 100%; }
+  .query-card :deep(.el-input),
+  .query-card :deep(.el-select),
+  .query-card :deep(.el-date-editor) { width: 100% !important; }
+  .pagination { justify-content: center; }
+}
 </style>

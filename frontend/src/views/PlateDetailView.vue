@@ -10,7 +10,7 @@
     <el-main class="app-main">
       <el-card v-loading="loading">
         <template #header>
-          <span>{{ plate }} 的所有违停记录（共 {{ records.length }} 条）</span>
+          <span>{{ plate }} 的违停记录（共 {{ total }} 条）</span>
         </template>
         <el-empty v-if="!loading && records.length === 0" description="暂无记录" />
         <div v-for="rec in records" :key="rec.id" class="record-card">
@@ -28,11 +28,25 @@
           <div class="photos">
             <div v-if="rec.image_path" class="photo-item">
               <div class="photo-label">第一张照片</div>
-              <el-image :src="rec.image_path" fit="cover" :preview-src-list="[rec.image_path]" class="photo" />
+              <el-image
+                :src="rec.image_path"
+                fit="cover"
+                lazy
+                :preview-src-list="previewList(rec)"
+                :initial-index="0"
+                class="photo"
+              />
             </div>
             <div v-if="rec.second_image_path" class="photo-item">
               <div class="photo-label">第二张照片</div>
-              <el-image :src="rec.second_image_path" fit="cover" :preview-src-list="[rec.second_image_path]" class="photo" />
+              <el-image
+                :src="rec.second_image_path"
+                fit="cover"
+                lazy
+                :preview-src-list="previewList(rec)"
+                :initial-index="1"
+                class="photo"
+              />
             </div>
           </div>
           <div class="actions">
@@ -47,6 +61,16 @@
             <el-button type="danger" size="small" plain @click="handleDelete(rec)">删除</el-button>
           </div>
           <el-divider />
+        </div>
+        <div class="pagination">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="pageSize"
+            :total="total"
+            :page-sizes="[10, 20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @change="load"
+          />
         </div>
       </el-card>
     </el-main>
@@ -85,9 +109,10 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, Van } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getPlateDetail, updateRecord, deleteRecord } from '@/api/index.js'
+import { nowDateTimeString } from '@/utils/datetime.js'
 import StatusTag from '@/components/StatusTag.vue'
 import ConfirmViolationDialog from '@/components/ConfirmViolationDialog.vue'
 
@@ -96,6 +121,9 @@ const router = useRouter()
 const plate = route.params.plate
 const records = ref([])
 const loading = ref(false)
+const page = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
 const confirmDialogVisible = ref(false)
 const currentRecord = ref(null)
 const reminderDialogVisible = ref(false)
@@ -109,14 +137,22 @@ const reminderDialogTitle = computed(() => (
   reminderDialogMode.value === 'edit' ? '修改提醒时间' : '提醒移车'
 ))
 
-function getNowDateTimeString() {
-  return new Date().toISOString().slice(0, 19).replace('T', ' ')
+// 同一记录的两张照片放在同一个预览列表里，便于左右对比
+function previewList(rec) {
+  return [rec.image_path, rec.second_image_path].filter(Boolean)
 }
 
 async function load() {
   loading.value = true
   try {
-    records.value = await getPlateDetail(plate)
+    const res = await getPlateDetail(plate, { page: page.value, page_size: pageSize.value })
+    // 删除记录后当前页可能为空，自动回退到上一页
+    if ((res.records || []).length === 0 && res.total > 0 && page.value > 1) {
+      page.value -= 1
+      return load()
+    }
+    records.value = res.records || []
+    total.value = res.total || 0
   } finally {
     loading.value = false
   }
@@ -125,14 +161,14 @@ async function load() {
 function openRemindDialog(rec) {
   reminderDialogMode.value = 'remind'
   reminderTargetRecord.value = rec
-  reminderForm.reminder_time = rec.reminder_time || getNowDateTimeString()
+  reminderForm.reminder_time = rec.reminder_time || nowDateTimeString()
   reminderDialogVisible.value = true
 }
 
 function openEditReminderDialog(rec) {
   reminderDialogMode.value = 'edit'
   reminderTargetRecord.value = rec
-  reminderForm.reminder_time = rec.reminder_time || getNowDateTimeString()
+  reminderForm.reminder_time = rec.reminder_time || nowDateTimeString()
   reminderDialogVisible.value = true
 }
 
@@ -165,12 +201,16 @@ async function confirmViolation(rec) {
 async function handleConfirmViolationSubmit(payload) {
   if (!currentRecord.value) return
   try {
+    const note = String(payload.notes || '').trim()
     const updateData = {
       status: '违停',
-      second_image_path: payload.second_image_path
+      second_image_path: payload.second_image_path,
+      second_check_time: nowDateTimeString()
     }
-    if (payload.notes) {
-      updateData.notes = payload.notes
+    if (note) {
+      // 追加而不是覆盖上传时填写的备注，避免信息丢失
+      const original = String(currentRecord.value.notes || '').trim()
+      updateData.notes = original ? `${original}\n${note}` : note
     }
     await updateRecord(currentRecord.value.id, updateData)
     ElMessage.success('已确认为违停并上传照片')
@@ -181,7 +221,20 @@ async function handleConfirmViolationSubmit(payload) {
 }
 
 async function confirmMoved(rec) {
-  await updateRecord(rec.id, { status: '已挪车' })
+  try {
+    await ElMessageBox.confirm(
+      '确认该车辆已挪车？确认后状态将变更为「已挪车」，无法再修改。',
+      '确认已挪车',
+      { type: 'warning', confirmButtonText: '确认已挪车', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 用户取消
+  }
+
+  await updateRecord(rec.id, {
+    status: '已挪车',
+    second_check_time: nowDateTimeString()
+  })
   ElMessage.success('已确认为已挪车')
   load()
 }
@@ -205,9 +258,17 @@ onMounted(load)
 .title { font-size: 18px; font-weight: bold; }
 .app-main { padding: 20px; }
 .record-card { margin-bottom: 8px; }
-.photos { display: flex; gap: 16px; margin-top: 12px; }
+.photos { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
 .photo-item { display: flex; flex-direction: column; align-items: center; }
 .photo-label { font-size: 12px; color: #666; margin-bottom: 4px; }
 .photo { width: 160px; height: 120px; border-radius: 4px; }
 .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.pagination { margin-top: 16px; display: flex; justify-content: flex-end; }
+
+@media (max-width: 768px) {
+  .app-main { padding: 12px; }
+  .title { font-size: 16px; }
+  .photos { gap: 8px; }
+  .photo { width: 120px; height: 90px; }
+}
 </style>

@@ -4,7 +4,7 @@
     @update:model-value="$emit('update:modelValue', $event)"
     title="上传违停照片"
     width="560px"
-    @close="resetForm"
+    @close="handleClose"
   >
     <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
       <el-form-item label="照片" prop="image_path">
@@ -30,26 +30,46 @@
         </el-upload>
       </el-form-item>
 
-      <el-form-item v-if="ocrLoading" label="识别状态">
-        <el-text type="info">OCR识别中，请稍候...</el-text>
-      </el-form-item>
-
-      <el-form-item v-if="ocrLines.length > 0" label="识别文字">
-        <div style="width:100%">
+      <el-form-item v-if="form.image_path" label="识别文字">
+        <div class="ocr-block">
+          <el-text v-if="ocrLoading" type="info">OCR 识别中，请稍候...</el-text>
           <el-input
+            v-else-if="ocrLines.length > 0"
             :model-value="ocrLines.join('\n')"
             type="textarea"
             :rows="6"
             readonly
           />
-          <el-button class="copy-ocr-btn" size="small" @click="copyOCRText">
-            复制识别文字
-          </el-button>
+          <el-text v-else type="info">未识别到文字，可点击「重新识别」或手动填写</el-text>
+
+          <div class="ocr-actions">
+            <el-button
+              v-if="ocrLines.length > 0"
+              size="small"
+              :disabled="ocrLoading"
+              @click="copyOCRText"
+            >
+              复制识别文字
+            </el-button>
+            <el-button
+              size="small"
+              :icon="Refresh"
+              :loading="ocrLoading"
+              @click="runOCRImage(form.image_path)"
+            >
+              重新识别
+            </el-button>
+          </div>
         </div>
       </el-form-item>
 
       <el-form-item label="车牌号" prop="plate_number">
-        <el-input v-model="form.plate_number" placeholder="例：粤A12345" clearable />
+        <el-input
+          v-model="form.plate_number"
+          placeholder="例：粤A12345"
+          clearable
+          @blur="normalizePlateInput"
+        />
       </el-form-item>
 
       <el-form-item label="停车时间" prop="parking_time">
@@ -86,8 +106,9 @@
 <script setup>
 import { reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
-import { createRecord, runOCR } from '@/api/index.js'
+import { Plus, Refresh } from '@element-plus/icons-vue'
+import { createRecord, runOCR, discardUpload } from '@/api/index.js'
+import { normalizePlate, plateValidator } from '@/utils/plate.js'
 
 const emit = defineEmits(['update:modelValue', 'created'])
 const props = defineProps({ modelValue: Boolean })
@@ -100,6 +121,8 @@ const ocrLoading = ref(false)
 const ocrLines = ref([])
 const previewVisible = ref(false)
 const previewImageUrl = ref('')
+// 本次会话已上传、但尚未被任何记录引用的图片；关闭弹窗时需要丢弃
+const pendingUploadUrl = ref('')
 
 const form = reactive({
   plate_number: '',
@@ -109,33 +132,33 @@ const form = reactive({
 })
 
 const rules = {
-  plate_number: [{ required: true, message: '请输入车牌号', trigger: 'blur' }],
+  plate_number: [
+    { required: true, message: '请输入车牌号', trigger: 'blur' },
+    { validator: plateValidator, trigger: 'blur' }
+  ],
   image_path: [{ required: true, message: '请上传照片', trigger: 'change' }]
 }
 
-const PROVINCE_CHARS = '京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼'
-const PLATE_RE = new RegExp(`([${PROVINCE_CHARS}][A-Z][A-Z0-9]{5,6})`)
-const FALLBACK_PLATE_RE = /([A-Z][A-Z0-9]{5,6})/
-const TIME_RE = /(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})(?:日)?\s+([01]?\d|2[0-3])[:时](\d{1,2})(?:[:分](\d{1,2}))?/
+function normalizePlateInput() {
+  form.plate_number = normalizePlate(form.plate_number)
+}
 
 async function onUploadSuccess(response, uploadFile) {
   // Go 后端响应 {"code":0,"data":{"url":"..."}}
   const url = response?.url || response?.data?.url || (response?.data && response.data)
-  if (url) {
-    form.image_path = url
-    ocrLines.value = []
-    if (uploadFile) {
-      uploadFile.url = url
-    }
-    ElMessage.info('上传成功，正在识别中...')
-    if (uploadFile?.raw instanceof Blob) {
-      await runOCRImage(uploadFile.raw)
-    } else {
-      ElMessage.warning('无法读取上传文件，未执行 OCR')
-    }
-  } else {
+  if (!url) {
     ElMessage.error('上传失败，请重试')
+    return
   }
+
+  form.image_path = url
+  pendingUploadUrl.value = url
+  ocrLines.value = []
+  if (uploadFile) {
+    uploadFile.url = url
+  }
+  // 直接复用已上传的图片路径，避免重复上传同一张图
+  await runOCRImage(url)
 }
 
 function onUploadError() {
@@ -146,11 +169,24 @@ function onUploadExceed() {
   ElMessage.warning('仅允许上传一张图片，请先移除当前图片后再上传')
 }
 
-function handleUploadRemove() {
+async function handleUploadRemove() {
   form.image_path = ''
   ocrLines.value = []
   previewImageUrl.value = ''
   previewVisible.value = false
+  await discardPendingUpload()
+}
+
+// 丢弃尚未被记录引用的上传图片，避免留下孤儿文件
+async function discardPendingUpload() {
+  const url = pendingUploadUrl.value
+  pendingUploadUrl.value = ''
+  if (!url) return
+  try {
+    await discardUpload(url)
+  } catch {
+    // 清理失败不影响用户操作，文件会留在上传目录
+  }
 }
 
 function onUploadPreview(file) {
@@ -187,23 +223,25 @@ async function copyOCRText() {
 }
 
 async function runOCRImage(imageInput) {
+  if (!imageInput) return
   ocrLoading.value = true
   try {
     const result = await runOCR(imageInput)
     ocrLines.value = normalizeOCRResult(result)
-    const filled = applyOCRAutoFill(ocrLines.value)
+    const filled = applyOCRAutoFill(result)
 
-    if (ocrLines.value.length > 0) {
-      if (filled.plate_number || filled.parking_time) {
-        ElMessage.success('识别成功，已自动回填表单')
-      } else {
-        ElMessage.success('识别成功，可直接复制文字')
-      }
+    if (ocrLines.value.length === 0) {
+      ElMessage.warning('未识别到文字，可点击「重新识别」或手动填写')
+    } else if (filled.plate_number || filled.parking_time) {
+      ElMessage.success('识别成功，已自动回填表单')
     } else {
-      ElMessage.warning('未识别到文字，请重试或手动输入')
+      ElMessage.success('识别成功，可复制下方文字手动填写')
     }
-  } catch {
-    ElMessage.warning('OCR识别失败，请重试')
+  } catch (err) {
+    // 响应拦截器已经弹出后端返回的具体原因，这里不再重复提示
+    if (!err?.handled) {
+      ElMessage.warning('OCR 识别失败，请重试')
+    }
   } finally {
     ocrLoading.value = false
   }
@@ -227,62 +265,36 @@ function normalizeOCRResult(result) {
     .filter(Boolean)
 }
 
-function applyOCRAutoFill(lines) {
-  const text = Array.isArray(lines) ? lines.join('\n') : ''
-  const compact = text.replace(/[\s·•，,。]/g, '').toUpperCase()
-  const plateMatch = compact.match(PLATE_RE) || compact.match(FALLBACK_PLATE_RE)
-  const timeMatch = text.match(TIME_RE)
-
+// 车牌与时间统一以后端 OCR 结果为准，前端不再重复实现提取规则
+function applyOCRAutoFill(result) {
   const filled = {
     plate_number: '',
     parking_time: ''
   }
+  if (!result) return filled
 
-  if (plateMatch?.[1]) {
-    form.plate_number = plateMatch[1]
-    filled.plate_number = plateMatch[1]
+  const plate = normalizePlate(result.plate_number || '')
+  if (plate) {
+    form.plate_number = plate
+    filled.plate_number = plate
   }
 
-  const parsedTime = toDateTimeString(timeMatch)
-  if (parsedTime) {
-    form.parking_time = parsedTime
-    filled.parking_time = parsedTime
+  const parkingTime = String(result.parking_time || '').trim()
+  if (parkingTime) {
+    form.parking_time = parkingTime
+    filled.parking_time = parkingTime
   }
 
   return filled
-}
-
-function toDateTimeString(match) {
-  if (!match) return ''
-
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  const hour = Number(match[4])
-  const minute = Number(match[5])
-  const second = Number(match[6] || 0)
-
-  const date = new Date(year, month - 1, day, hour, minute, second)
-  if (
-    Number.isNaN(date.getTime()) ||
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day ||
-    date.getHours() !== hour ||
-    date.getMinutes() !== minute
-  ) {
-    return ''
-  }
-
-  const pad = n => String(n).padStart(2, '0')
-  return `${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`
 }
 
 async function handleSubmit() {
   await formRef.value.validate()
   submitting.value = true
   try {
-    await createRecord({ ...form })
+    await createRecord({ ...form, plate_number: normalizePlate(form.plate_number) })
+    // 图片已被记录引用，不再是待丢弃文件
+    pendingUploadUrl.value = ''
     ElMessage.success('上传成功')
     emit('update:modelValue', false)
     emit('created')
@@ -290,6 +302,11 @@ async function handleSubmit() {
   } finally {
     submitting.value = false
   }
+}
+
+async function handleClose() {
+  await discardPendingUpload()
+  resetForm()
 }
 
 function resetForm() {
@@ -318,7 +335,8 @@ watch(
 
 <style scoped>
 .upload-tip { color: #999; font-size: 12px; margin-top: 4px; }
-.copy-ocr-btn { margin-top: 8px; }
+.ocr-block { width: 100%; }
+.ocr-actions { display: flex; gap: 8px; margin-top: 8px; }
 .preview-image {
   display: block;
   width: 100%;
