@@ -947,6 +947,10 @@ func isRunnerLogLine(text string) bool {
 		return true
 	case strings.HasPrefix(text, "numThread("):
 		return true
+	case strings.HasPrefix(text, "total keys size("):
+		return true
+	case strings.HasPrefix(text, "Init Models"):
+		return true
 	case strings.HasPrefix(text, "other option "):
 		return true
 	case strings.Contains(text, " path("):
