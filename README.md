@@ -51,7 +51,8 @@
 ## 开发环境要求
 
 - Go 1.25+
-- Node.js 20+
+- Node.js 22.18+ 或 24.11+
+- pnpm 10+（前端包管理器，版本见 `frontend/package.json` 的 `packageManager`）
 
 ## 本地开发
 
@@ -59,13 +60,13 @@
 
 ```bash
 cd frontend
-npm install
+pnpm install
 ```
 
 2. 前端开发模式
 
 ```bash
-npm run dev
+pnpm run dev
 ```
 
 3. 后端开发运行

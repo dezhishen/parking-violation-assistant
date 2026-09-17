@@ -10,7 +10,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 GO   ?= go
-NPM  ?= npm
+PNPM ?= pnpm
 NODE ?= node
 
 DIST_DIR    := dist
@@ -59,7 +59,7 @@ build-windows: ## 完整生产构建：前端 + 校验 + ONNX 资源 + 后端 + 
 	@./scripts/build_go_windows.sh
 
 build-frontend: frontend/node_modules ## 构建前端产物到 frontend/dist
-	@cd frontend && $(NPM) run build
+	@cd frontend && $(PNPM) run build
 	@$(NODE) scripts/verify_frontend_dist.mjs
 
 build-backend: mkdist $(EMBED_STUB) ## 仅构建后端二进制（使用当前 frontend/dist）
@@ -78,8 +78,8 @@ mkdist:
 mkdev:
 	@mkdir -p $(DEV_DIR)
 
-frontend/node_modules: frontend/package.json frontend/package-lock.json
-	@cd frontend && $(NPM) install --no-audit --no-fund
+frontend/node_modules: frontend/package.json frontend/pnpm-lock.yaml
+	@cd frontend && $(PNPM) install --frozen-lockfile
 
 $(EMBED_STUB):
 	@mkdir -p $(dir $(EMBED_STUB))

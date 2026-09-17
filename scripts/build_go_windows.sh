@@ -4,8 +4,8 @@ set -euo pipefail
 
 echo "=== 构建前端 ==="
 cd frontend
-npm install
-npm run build
+pnpm install --frozen-lockfile
+pnpm run build
 cd ..
 
 echo "=== 校验前端产物完整性 ==="

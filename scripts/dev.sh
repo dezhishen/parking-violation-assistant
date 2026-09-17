@@ -23,6 +23,8 @@ DIST_INDEX="$FRONTEND_DIR/dist/index.html"
 
 BACKEND_PORT="${BACKEND_PORT:-8080}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+# 包管理器可覆盖，例如 PNPM="corepack pnpm"
+PNPM="${PNPM:-pnpm}"
 
 # 本实例启动的进程 PID：退出时只清理自己的进程，避免影响后续启动的实例
 SERVICE_PID=""
@@ -141,7 +143,7 @@ start_service() {
 ensure_frontend_deps() {
 	[ -d "$FRONTEND_DIR/node_modules" ] && return 0
 	info "首次运行，安装前端依赖 ..."
-	if ! (cd "$FRONTEND_DIR" && npm install --no-audit --no-fund); then
+	if ! (cd "$FRONTEND_DIR" && $PNPM install); then
 		err "前端依赖安装失败"
 		return 1
 	fi
@@ -203,7 +205,7 @@ do_start() {
 	# 4. 启动前端（日志同控制台输出）
 	info "启动前端 http://localhost:$FRONTEND_PORT"
 	if ! start_service "$FRONTEND_PID_FILE" "前端(Vite)" \
-		bash -c "cd '$FRONTEND_DIR' && exec npm run dev -- --port $FRONTEND_PORT --strictPort"; then
+		bash -c "cd '$FRONTEND_DIR' && exec $PNPM exec vite --port $FRONTEND_PORT --strictPort"; then
 		err "前端启动失败，正在回滚 ..."
 		cleanup_started
 		exit 1

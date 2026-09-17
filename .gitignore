@@ -26,6 +26,9 @@ data/uploads/
 frontend/dist/
 frontend/node_modules/
 
+# 包管理器日志
+pnpm-debug.log*
+
 # Python 遗留文件
 __pycache__/
 *.py[cod]
